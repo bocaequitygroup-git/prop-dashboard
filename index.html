@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ngapori Greenhouse &amp; Field OS</title>
+<style>
+:root{--bg:#edf1ec;--card:#fff;--ink:#17231c;--mute:#5d6b62;--line:#cfd8cf;--acc:#2f6f4f;--accs:#dcebe1;--warn:#a85d00;--warns:#fbeccf;--red:#b3261e;--reds:#f8d9d6;--brown:#8a5a2b;--gray:#9aa59d}
+@media(prefers-color-scheme:dark){:root{--bg:#111a14;--card:#1a261e;--ink:#e6efe8;--mute:#92a398;--line:#2f4036;--acc:#6fc596;--accs:#21382b;--warn:#f0b455;--warns:#3a2c10;--red:#ff8a80;--reds:#4a1f1b;--brown:#c8935a;--gray:#6b786f;color-scheme:dark}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,sans-serif}
+#strip{position:sticky;top:0;z-index:5;display:flex;flex-wrap:wrap;gap:8px;padding:8px 12px;background:var(--card);border-bottom:2px solid var(--line)}
+.chip{flex:1 1 230px;border-radius:8px;padding:6px 10px;font-size:13px;background:var(--accs);color:var(--acc)}.chip b{display:block;font-size:15px}
+.chip.red{background:var(--reds);color:var(--red)}.chip.warn{background:var(--warns);color:var(--warn)}.chip.off{background:var(--bg);color:var(--mute)}
+.flash{animation:f 1s steps(2) infinite}@keyframes f{50%{opacity:.35}}@media(prefers-reduced-motion:reduce){.flash{animation:none;outline:2px solid currentColor}}
+#app{display:grid;grid-template-columns:200px 1fr}nav{padding:12px;border-right:1px solid var(--line)}
+nav button{display:block;width:100%;text-align:left;margin-bottom:6px;background:none;color:var(--ink);border:1px solid var(--line)}nav button.on{background:var(--acc);color:var(--bg)}
+main{padding:16px;max-width:1100px}h2{font-size:17px;margin:0 0 8px}.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:14px}.k{color:var(--mute);font-size:13px}
+button,input,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);min-height:38px}button{background:var(--acc);color:var(--bg);border:0;font-weight:600;cursor:pointer}:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:8px}.tile{border:1px solid var(--line);border-radius:8px;padding:8px;background:var(--accs);color:var(--ink);text-align:left;min-height:64px}
+.tile.sel{outline:3px solid var(--acc)}.tile.red{background:var(--reds)}.bar{height:8px;background:var(--line);border-radius:4px;margin-top:4px}.bar i{display:block;height:100%;background:var(--acc);border-radius:4px}
+.beds{display:grid;grid-template-columns:repeat(55,1fr);gap:2px}.bed{aspect-ratio:1;border-radius:2px;background:var(--bg);border:1px solid var(--line)}.bed.g{background:var(--acc);border-color:var(--acc)}.bed.b{background:var(--brown);border-color:var(--brown)}
+.lg i{display:inline-block;width:12px;height:12px;border-radius:2px;margin:0 4px 0 12px;vertical-align:-1px}
+table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);font-size:14px}th{color:var(--mute);font-size:12px}.t{overflow-x:auto}
+.act{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--line)}.act.lock{opacity:.45}.row{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+.err{color:var(--red);font-size:14px}.hidden{display:none}
+@media(max-width:700px){#app{grid-template-columns:1fr}nav{display:flex;gap:6px;overflow-x:auto;border:0}nav button{width:auto;white-space:nowrap}}
+</style></head><body>
+<div id="strip"></div>
+<div id="app"><nav id="nav"></nav><main>
+<p class="err" id="err"></p>
+<section id="v-home"></section><section id="v-plan" class="hidden"></section><section id="v-task" class="hidden"></section><section id="v-hw" class="hidden"></section>
+</main></div>
+<script>
+const API_URL = "https://script.google.com/macros/s/AKfycbz7qyhFT5BRUpiqLCnjtT8gRX-UQ-I0lQhF__H6dgCU_Rql2WFOMuNm-YLXazi0Zrir_g/exec"; // <- paste your Apps Script Web app URL (ends in /exec)
+const $ = id => document.getElementById(id), esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const get = async p => { const j = await (await fetch(API_URL + "?" + new URLSearchParams(p))).json(); if (j.error) throw new Error(j.error); return j; };
+const post = async b => { const j = await (await fetch(API_URL, {method:"POST", headers:{"Content-Type":"text/plain"}, body:JSON.stringify(b)})).json(); if (j.error) throw new Error(j.error); return j; };
+const err = m => $("err").textContent = m || "";
+const day = 864e5, today = () => new Date(new Date().toDateString()), D = s => new Date(s + "T00:00:00");
+let DASH, SEL = null, RUN = null, probeF = null, benchSq = 1.55;
+const NAV = [["home","📍 Spatial Command"],["plan","🌱 Batch & Cohort Planner"],["task","🛠️ Task Assign & Verify"],["hw","⚙️ Hardware & Interlocks"]];
+$("nav").innerHTML = NAV.map(([k,l]) => `<button data-v="${k}">${l}</button>`).join("");
+function show(k) { NAV.forEach(([n]) => $("v-" + n).classList.toggle("hidden", n !== k)); document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.v === k)); }
+$("nav").onclick = e => { if (e.target.dataset.v) show(e.target.dataset.v); };
+
+const P = c => DASH.params.find(x => x.crop_code === c) || {};
+const direct = c => /DIRECT|PERENNIAL/i.test(P(c).propagation_method || "");
+const sowOf = r => r.sow_date_wave1;
+const bedsOf = loc => { const m = /B(\d)-(\d+)\D+B\d-(\d+)/.exec(loc || ""); return m ? {b:+m[1], a:+m[2], z:+m[3]} : null; };
+
+/* ---- header strip: gate, 45F floor, 3 PM lockout ---- */
+function strip() {
+  const prop = DASH.runs.filter(r => !direct(r.crop_code)), open = prop.filter(r => r.status !== "Ready");
+  const gate = !prop.length ? ["off","[ NO RUNS ]","No propagation run saved yet"] : open.length ? ["red","[ LOCKED ]", `Pre-sowing gate (ACT-101–105, ACT-607) open on ${open.length} run(s)`] : ["","[ AUTO_READY = TRUE ]","All gates verified: loops GH-05 to GH-20 released"];
+  const f = probeF, soil = f === null ? ["off","45°F floor: no probe feed","Enter lowest probe °F under Hardware"] : f <= 45 ? ["warn flash","45°F FLOOR ACTIVE · " + f + "°F","Curtains forced shut · hydronic loops engaged"] : ["","Soil floor OK · " + f + "°F","Above 45°F (7°C)"];
+  const n = new Date(), lock = new Date(n); lock.setHours(15,0,0,0); const ms = lock - n, m = Math.floor(ms / 6e4);
+  const lo = ms <= 0 ? ["red","Model B / field water LOCKED OUT","Valves killed at 15:00 (dew prevention); resets at midnight"] : [m <= 60 ? "warn flash" : "", "Water lockout in " + Math.floor(m/60) + "h " + String(m%60).padStart(2,"0") + "m", "Model B + field valves close at 15:00"];
+  $("strip").innerHTML = [gate, soil, lo].map(([c,t,s]) => `<div class="chip ${c}"><b>${esc(t)}</b>${esc(s)}</div>`).join("");
+}
+
+/* ---- Home: spatial map ---- */
+function locOf(tag) { return DASH.rulebook.filter(r => r.platform === "G" && new RegExp("GH-" + tag).test(r.planting_location)); }
+function benchTrays() { return DASH.runs.reduce((s, r) => { const a = D(sowOf(r)), b = D(r.dob); return s + (today() >= a && today() < b ? Number(r.trays_per_wave) || 0 : 0); }, 0); }
+function home() {
+  const cap = 800, used = benchTrays() * benchSq, pct = Math.min(100, Math.round(used / cap * 100)), near = used >= cap * .9;
+  const ghTile = n => { const id = "GH-" + String(n).padStart(2, "0"), prop = n === 7 || n === 8;
+    return `<button class="tile ${near && prop ? "red flash" : ""} ${SEL === id ? "sel" : ""}" data-t="${id}"><b>${id}</b>${prop ? `<div class="k">Propagation ${pct}%</div><div class="bar"><i style="width:${pct}%"></i></div>` : `<div class="k">${n > 10 ? "Model B" : "Model A"}</div>`}</button>`; };
+  const field = [1,2,3,4].map(b => { const cls = Array(55).fill(""); DASH.runs.filter(r => r.platform === "F").forEach(r => { const x = bedsOf((DASH.rulebook.find(q => q.crop_code === r.crop_code && q.platform === "F") || {}).planting_location);
+      if (x && x.b === b) for (let i = x.a; i <= x.z && i <= 55; i++) cls[i-1] = direct(r.crop_code) ? "b" : "g"; });
+    return `<h2>Block ${b} <span class="k">55 beds · 300 ft runs</span></h2><div class="beds">${cls.map((c,i) => `<div class="bed ${c}" title="B${b}-${String(i+1).padStart(2,"0")}"></div>`).join("")}</div>`; }).join("");
+  let detail = "";
+  if (SEL) { const n = SEL.slice(3); const rows = DASH.rulebook.filter(r => r.platform === "G" && (new RegExp("GH-" + n + "(?!\\d)").test(r.planting_location) || inRange(r.planting_location, +n)));
+    detail = `<div class="card"><h2>${SEL}</h2>${rows.length ? rows.map(r => `<div>${esc(r.crop_code)} · ${esc(r.planting_location)}</div>`).join("") : '<span class="k">No crop located here in the rulebook.</span>'}${+n === 3 ? '<p class="k">Live trellis data: no feed connected.</p>' : ""}${+n === 7 || +n === 8 ? `<p class="k">Bench: ${benchTrays()} trays × ${benchSq} sq ft = ${used.toFixed(0)} of ${cap} sq ft.${near ? " Near ceiling." : ""}</p>` : ""}</div>`; }
+  $("v-home").innerHTML = `<div class="card"><h2>Model A · GH-01 to GH-10</h2><div class="tiles">${[1,2,3,4,5,6,7,8,9,10].map(ghTile).join("")}</div></div>
+  <div class="card"><h2>Model B · GH-11 to GH-20</h2><div class="tiles">${[11,12,13,14,15,16,17,18,19,20].map(ghTile).join("")}</div><p class="k">Curtain and tunnel open/locked state: no feed connected.${probeF !== null && probeF <= 45 ? " Interlock logic: curtains forced shut." : ""}</p></div>${detail}
+  <div class="card"><h2>Open field</h2>${field}<p class="k lg"><i style="background:var(--acc)"></i>Active crop<i style="background:var(--brown)"></i>Direct-seeded<i style="border:1px solid var(--line)"></i>No saved run (post-harvest reset state is not tracked in the data)</p></div>${gaps()}`;
+  $("v-home").querySelectorAll("[data-t]").forEach(b => b.onclick = () => { SEL = b.dataset.t; home(); });
+}
+function inRange(loc, n) { const m = /GH-(\d+)\D+GH-(\d+)/.exec(loc || ""); return !!m && n >= +m[1] && n <= +m[2]; }
+
+/* ---- Gap & Delay warning center ---- */
+function gaps() {
+  const t = today(), items = [];
+  DASH.runs.forEach(r => { const p = P(r.crop_code); if (direct(r.crop_code)) return;
+    const on = Math.round((t - D(sowOf(r))) / day), planned = (+p.germination_days || 0) + (+p.nursery_days || 0) + (+p.harden_days || 0);
+    if (on > planned && planned > 0 && t < D(r.dob)) items.push(["warn", `${r.crop_code} wave 1 has been on the bench ${on} days against a plan of ${planned}. Each later wave slips about ${on - planned} day(s) unless the bench is cleared.`]);
+    const w = DASH.windows[r.crop_code + "|" + r.platform], m = /[–-]\s*([A-Za-z]{3})\w*\s+(\d+)/.exec(w || "");
+    if (m) { const dob = D(r.dob), end = new Date(`${m[1]} ${m[2]}, ${dob.getFullYear()}`), left = Math.round((end - dob) / day);
+      if (left < 0) items.push(["red", `${r.crop_code} planting ${r.dob} is ${-left} day(s) past its Oregon window (${w}). Redirect labor now.`]); else if (left <= 7) items.push(["red flash", `${r.crop_code} planting ${r.dob} is ${left} day(s) from the end of its Oregon window (${w}).`]); } });
+  return `<div class="card"><h2>🚨 Gap &amp; Delay Warnings</h2>${items.length ? items.map(([c, s]) => `<div class="chip ${c}" style="margin:4px 0">${esc(s)}</div>`).join("") : '<span class="k">No warnings from saved runs.</span>'}<p class="k">Bench time is compared with each crop's planned germination, nursery and hardening days. Windows come from Planting_Plan.</p></div>`;
+}
+
+/* ---- Planner ---- */
+function plan() {
+  $("v-plan").innerHTML = `<div class="card"><h2>Cohort waves · ${DASH.params.length} crops on file</h2><div class="t"><table><tr><th>Run</th><th>Crop</th><th>Plat.</th><th>Planting (DOB)</th><th>Sowing</th><th>Waves</th><th>Trays/wave</th><th>Status</th></tr>${DASH.runs.map(r => `<tr><td>${esc(r.run_id)}</td><td>${esc(r.crop_code)} ${esc(P(r.crop_code).crop_name)}</td><td>${esc(r.platform)}</td><td>${esc(r.dob)}</td><td>${direct(r.crop_code) ? "direct" : esc(sowOf(r))}</td><td>${esc(r.waves)}</td><td>${esc(r.trays_per_wave)}</td><td>${esc(r.status)}</td></tr>`).join("") || '<tr><td colspan="8" class="k">No runs saved yet.</td></tr>'}</table></div></div>
+  <div class="card"><h2>Crop catalogue</h2><div class="t"><table><tr><th>Code</th><th>Crop</th><th>Method</th><th>Days before planting</th></tr>${DASH.params.map(c => `<tr><td>${esc(c.crop_code)}</td><td>${esc(c.crop_name)}</td><td>${esc(c.propagation_method)}</td><td>${esc(c.total_pre_dob_days)}</td></tr>`).join("")}</table></div></div>`;
+}
+
+/* ---- Task assign & verify ---- */
+async function task() {
+  const crops = DASH.params.map(c => `<option value="${c.crop_code}">${c.crop_code} · ${esc(c.crop_name)}</option>`).join("");
+  $("v-task").innerHTML = `<div class="card"><h2>New batch</h2><div class="row"><select id="nc">${crops}</select><select id="np"></select><input id="nd" type="date"><button id="mk">Create run</button></div><p class="k" id="fw"></p></div>
+  <div class="card"><h2>Run</h2><div class="row"><select id="rs"><option value="">Select a run</option>${DASH.runs.map(r => `<option>${esc(r.run_id)}</option>`).join("")}</select><input id="who" placeholder="Your name"><input id="pin" type="password" placeholder="Manager PIN"></div><div id="acts"></div></div>`;
+  const dest = () => { const c = $("nc").value; $("np").innerHTML = DASH.rulebook.filter(r => r.crop_code === c).map(r => `<option value="${r.platform}">${r.platform === "F" ? "Field" : "Greenhouse"} · ${esc(r.planting_location)}</option>`).join("");
+    $("fw").textContent = direct(c) ? "Direct-seeded: no nursery, so no pre-sowing gate." : "Firewall: ACT-101 to ACT-105 and ACT-607 must be completed and manager-verified before Phase 2 (ACT-201 onward) unlocks."; };
+  $("nc").onchange = dest; dest();
+  $("mk").onclick = async () => { try { if (!$("nd").value) throw new Error("Pick a planting date."); const r = await post({action:"saveRun", crop:$("nc").value, platform:$("np").value, dob:$("nd").value}); await load(); RUN = r.runId; task(); $("rs").value = RUN; acts(); err(""); } catch (e) { err(e.message); } };
+  $("rs").onchange = () => { RUN = $("rs").value; acts(); }; if (RUN) { $("rs").value = RUN; acts(); }
+}
+async function acts() {
+  if (!RUN) { $("acts").innerHTML = ""; return; }
+  try { const s = await get({action:"run", runId:RUN});
+    $("acts").innerHTML = (s.notApplicable ? '<p class="k">Direct-seeded run: no gates.</p>' : s.ready ? '<p class="chip">Ready: Phase 2 and later are unlocked.</p>' : '<p class="chip red">Phases 2+ locked until the gates are completed and verified.</p>') +
+      s.activities.map(a => `<div class="act ${a.locked ? "lock" : ""}" data-a="${a.id}"><b>${a.id}</b> ${esc(a.name)} <span class="k">${esc(a.timing)}</span>${a.locked ? '<span class="k">🔒 locked</span>' : `${a.requiresCount ? `<input data-c placeholder="Count" size="6" value="${esc(a.count)}"><input data-u placeholder="Unit" size="6" value="${esc(a.unit)}">` : ""}<label><input type="checkbox" data-d ${a.completed ? "checked" : ""}> done</label>${a.completed && !a.verified ? '<button data-v>Verify</button>' : ""}${a.verified ? '<span class="chip" style="flex:0">Verified</span>' : ""}`}</div>`).join("");
+    $("acts").querySelectorAll(".act").forEach(row => { const id = row.dataset.a, d = row.querySelector("[data-d]"), v = row.querySelector("[data-v]");
+      if (d) d.onchange = async () => { try { await post({action:"complete", runId:RUN, activityId:id, completed:d.checked, count:(row.querySelector("[data-c]") || {}).value || "", unit:(row.querySelector("[data-u]") || {}).value || "", user:$("who").value}); err(""); await load(); acts(); } catch (e) { d.checked = !d.checked; err(e.message); } };
+      if (v) v.onclick = async () => { try { await post({action:"verify", runId:RUN, activityId:id, pin:$("pin").value, user:$("who").value}); $("pin").value = ""; err(""); await load(); acts(); } catch (e) { err(e.message); } }; });
+  } catch (e) { err(e.message); }
+}
+
+/* ---- Hardware ---- */
+function hw() {
+  $("v-hw").innerHTML = `<div class="card"><h2>Interlock inputs</h2><div class="row"><label>Lowest probe °F <input id="pf" type="number" step="0.1" value="${probeF ?? ""}"></label><label>Sq ft per tray <input id="bs" type="number" step="0.05" value="${benchSq}"></label><button id="ap">Apply</button></div><p class="k">No sensor feed is connected to the sheet. These two values are typed in and kept only while this page is open. The 45°F alert and bench occupancy use them.</p></div>
+  <div class="card"><h2>Propagation room hardware (Infra_GH)</h2><div class="t"><table><tr><th>Item</th><th>Spec</th><th>Qty</th><th>Live status</th></tr>${DASH.infra.map(r => `<tr><td>${esc(r.item)}</td><td>${esc(r.spec)}</td><td>${esc(r.quantity)}</td><td class="k">${/solenoid|valve|probe|curtain/i.test(r.item) ? "No feed connected" : "n/a"}</td></tr>`).join("")}</table></div></div>`;
+  $("ap").onclick = () => { const v = $("pf").value; probeF = v === "" ? null : Number(v); benchSq = Number($("bs").value) || 1.55; strip(); home(); };
+}
+
+async function load() { DASH = await get({action:"dash"}); }
+(async () => {
+  if (!API_URL) { err("Set API_URL at the top of this file to your deployed Apps Script web app URL (see README)."); return; }
+  try { await load(); } catch (e) { err("Cannot reach the API: " + e.message); return; }
+  show("home"); strip(); home(); plan(); task(); hw(); setInterval(strip, 30000);
+  document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => { if (b.dataset.v === "home") home(); if (b.dataset.v === "plan") { load().then(plan); } }));
+})();
+</script></body></html>
