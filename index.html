@@ -19,7 +19,10 @@ button,input,select{font:inherit;padding:7px 10px;border:1px solid var(--line);b
 .lg i{display:inline-block;width:12px;height:12px;border-radius:2px;margin:0 4px 0 12px;vertical-align:-1px}
 table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);font-size:14px}th{color:var(--mute);font-size:12px}.t{overflow-x:auto}
 .act{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--line)}.act.lock{opacity:.45}.row{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
-.err{color:var(--red);font-size:14px}.hidden{display:none}
+.err{color:var(--red);font-size:14px}.hidden{display:none!important}
+h3{font-size:15px;margin:16px 0 6px}.ar{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:8px;display:grid;gap:4px}.ar.gatebox{border-left:4px solid var(--warn)}.desc{font-size:14px;border-left:3px solid var(--line);padding-left:8px}.pane{border-top:1px dashed var(--line);padding-top:8px;display:grid;gap:6px}
+.plist{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px;margin-top:6px}.pa{display:flex;gap:8px;align-items:flex-start;border:1px solid var(--line);border-radius:6px;padding:8px}.pa .d{display:block;color:var(--mute);font-size:13px}.pa input,.team input{min-height:0;width:18px;height:18px;padding:0;margin-top:3px}
+.team{border:1px solid var(--line);border-radius:6px;padding:6px 10px;display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:4px 12px;margin:0}.team legend{font-size:12px;color:var(--mute);padding:0 4px}.team label{display:flex;gap:8px;align-items:center}button.alt{background:var(--bg);color:var(--ink);border:1px solid var(--line)}.pill{font-size:12px;color:var(--mute)}details{margin:6px 0}summary{cursor:pointer;font-weight:600}.note{background:var(--warns);color:var(--warn);border-radius:8px;padding:8px 12px;font-size:14px}
 @media(max-width:700px){#app{grid-template-columns:1fr}nav{display:flex;gap:6px;overflow-x:auto;border:0}nav button{width:auto;white-space:nowrap}}
 </style></head><body>
 <div id="strip"></div>
@@ -30,8 +33,12 @@ table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:6px 8px;
 <script>
 const API_URL = "https://script.google.com/macros/s/AKfycbz7qyhFT5BRUpiqLCnjtT8gRX-UQ-I0lQhF__H6dgCU_Rql2WFOMuNm-YLXazi0Zrir_g/exec"; // <- paste your Apps Script Web app URL (ends in /exec)
 const $ = id => document.getElementById(id), esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const get = async p => { const j = await (await fetch(API_URL + "?" + new URLSearchParams(p))).json(); if (j.error) throw new Error(j.error); return j; };
-const post = async b => { const j = await (await fetch(API_URL, {method:"POST", headers:{"Content-Type":"text/plain"}, body:JSON.stringify(b)})).json(); if (j.error) throw new Error(j.error); return j; };
+const call = async (url, opt) => {
+  let t; try { t = await (await fetch(url, opt)).text(); } catch (e) { throw new Error("No connection to the server."); }
+  let j; try { j = JSON.parse(t); } catch (e) { throw new Error("The server sent back a web page instead of data. If you just changed Code.gs, deploy it as a new version; otherwise try again in a moment."); }
+  if (j.error) throw new Error(j.error); return j; };
+const get = async p => { const u = API_URL + "?" + new URLSearchParams(p); try { return await call(u); } catch (e) { if (!/web page/.test(e.message)) throw e; await new Promise(r => setTimeout(r, 1200)); return call(u); } };
+const post = b => call(API_URL, {method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify(b)});
 const err = m => $("err").textContent = m || "";
 const day = 864e5, today = () => new Date(new Date().toDateString()), D = s => new Date(s + "T00:00:00");
 let DASH, SEL = null, RUN = null, probeF = null, benchSq = 1.55;
@@ -93,25 +100,113 @@ function plan() {
   <div class="card"><h2>Crop catalogue</h2><div class="t"><table><tr><th>Code</th><th>Crop</th><th>Method</th><th>Days before planting</th></tr>${DASH.params.map(c => `<tr><td>${esc(c.crop_code)}</td><td>${esc(c.crop_name)}</td><td>${esc(c.propagation_method)}</td><td>${esc(c.total_pre_dob_days)}</td></tr>`).join("")}</table></div></div>`;
 }
 
-/* ---- Task assign & verify ---- */
-async function task() {
+/* ---- Task assign & verify: the manager assigns, reassigns and verifies. Workers start, time and submit the work on their phones. ---- */
+const esc_ = esc, fmt = s => s ? D(s).toLocaleDateString(undefined, {weekday:"short", month:"short", day:"numeric", year:"numeric"}) : "";
+let WORKERS = [], REF = [], OPEN = {}, ST = null, AS = null, WHO = "";
+const changed = () => { err(""); load().then(strip, () => {}); return loadAssign(); };
+async function loadAssign() {
+  try { AS = await get({action:"assignments"}); } catch (e) { $("acur").innerHTML = `<p class="k">Could not load assignments: ${esc_(e.message)}</p>`; return; }
+  drawAssign();
+}
+function drawAssign() {
+  if (!AS) return;
+  const names = [...new Set(AS.current.flatMap(c => c.team).concat(AS.log.flatMap(l => [l.from, l.to])).filter(Boolean))].sort(), sel = $("afw"), keep = sel.value;
+  sel.innerHTML = `<option value="">All workers</option>` + names.map(n => `<option ${n === keep ? "selected" : ""}>${esc_(n)}</option>`).join("");
+  const w = sel.value, ok = x => $("afs").value !== "this" || !RUN || x.run === RUN, pf = p => p === "F" ? "Field" : p === "G" ? "Greenhouse" : "";
+  const cur = AS.current.filter(c => ok(c) && (!w || c.team.includes(w))), lg = AS.log.filter(l => ok(l) && (!w || l.from === w || l.to === w));
+  const act = x => `<b>${esc_(x.activityId)}</b> ${esc_(x.activity)}`, where = x => `${esc_(x.crop)} ${pf(x.platform)} · ${esc_(x.run)}`;
+  $("acur").innerHTML = cur.length ? `<table><tr><th>Worker(s)</th><th>Activity</th><th>Crop · run</th><th>Due</th><th>Status</th><th>Assigned</th></tr>${cur.map(c =>
+    `<tr><td>${esc_(c.team.join(", "))}</td><td>${act(c)}</td><td>${where(c)}</td><td>${c.due ? when(c.due) : ""}</td><td>${esc_(c.status)}</td><td>${when(c.assignedAt)}${c.assignedBy ? " by " + esc_(c.assignedBy) : ""}</td></tr>`).join("")}</table>` : `<p class="k">Nothing is assigned${w ? " to " + esc_(w) : ""} yet.</p>`;
+  $("alogt").innerHTML = lg.length ? `<table><tr><th>When</th><th>What happened</th><th>Activity</th><th>Crop · run</th><th>By</th></tr>${lg.map(l =>
+    `<tr><td>${when(l.at)}</td><td>${l.kind === "REASSIGN" ? `<b>Reassigned from ${esc_(l.from)} to ${esc_(l.to)}</b>` : l.kind === "UNASSIGN" ? `Removed ${esc_(l.from)}` : `Assigned to ${esc_(l.to)}`}</td><td>${act(l)}</td><td>${where(l)}</td><td>${esc_(l.by || "")}</td></tr>`).join("")}</table>` : `<p class="k">No assignments logged yet.</p>`;
+}
+const when = s => { if (!s) return "n/a"; const d = new Date(s); return isNaN(d) ? String(s) : String(s).length > 10 ? d.toLocaleString() : fmt(String(s).slice(0, 10)); };
+const nice = s => String(s == null ? "" : s).replace(/;\s*/g, ", ");
+const statusOf = a => a.overridden ? ["Overridden by manager", ""] : a.verified ? ["Verified", "ok"] : a.completed ? ["Done by worker · awaiting your verification", ""] :
+  a.sessions && a.sessions.length ? ["In progress · " + a.sessions.map(s => s.by || "n/a").join(", "), "live"] : a.assignee ? ["Assigned", ""] : ["Not assigned", ""];
+const teamBox = (key, sel) => WORKERS.length
+  ? `<fieldset class="team" data-team="${key}"><legend>Workers: tick one or more</legend>${WORKERS.map(w => `<label><input type="checkbox" value="${esc_(w.id)}" ${sel.includes(String(w.id)) ? "checked" : ""}> ${esc_(w.name)} <span class="pill">${esc_(w.role)}</span></label>`).join("")}</fieldset>`
+  : `<label>Worker name<input data-team="${key}" placeholder="Worker name"></label>`;
+const teamVal = el => !el ? {workerIds:[], name:""} : el.matches("fieldset") ? {workerIds:[...el.querySelectorAll("input:checked")].map(i => i.value), name:""} : {workerIds:[], name:el.value.trim()};
+function drawPicker(st) {   // activities still to be assigned: not yet in the run, or in the run with nobody on them
+  const had = {}; $("picker").querySelectorAll("input:checked").forEach(i => had[i.value] = 1);
+  const who = [...$("teampick").querySelectorAll("input:checked")].map(i => i.value), inRun = {}; st.activities.forEach(a => inRun[a.id] = a);
+  const by = {}; REF.filter(a => { const r = inRun[a.activity_id]; return r ? !r.assignee : a.scope === "crop-wave"; }).forEach(a => (by[a.phase || "Required gate activities"] = by[a.phase || "Required gate activities"] || []).push(a));
+  $("picker").innerHTML = Object.keys(by).length ? Object.entries(by).map(([ph, l]) => `<details ${l.some(a => had[a.activity_id] || a.scope !== "crop-wave") ? "open" : ""}><summary>${esc_(ph)} (${l.length})</summary><div class="plist">${l.map(a =>
+    `<label class="pa"><input type="checkbox" value="${esc_(a.activity_id)}" ${had[a.activity_id] ? "checked" : ""}><span><b>${esc_(a.activity_id)} · ${esc_(a.activity)}</b>${a.scope !== "crop-wave" ? ` <span class="pill">required gate</span>` : ""}<span class="d">${esc_(a.description || "")}</span></span></label>`).join("")}</div></details>`).join("")
+    : `<p class="k">Every activity in this run has been assigned.</p>`;
+  $("teampick").innerHTML = teamBox("new", who);
+}
+const histHtml = a => (a.history || []).map(h => `<div class="k">${when(h.at)} · ${h.kind === "REASSIGN" ? `<b>Reassigned from ${esc_(h.from)} to ${esc_(h.to)}</b>` : h.kind === "UNASSIGN" ? `Removed ${esc_(h.from)}` : `Assigned ${esc_(h.to)}`}${h.by ? " by " + esc_(h.by) : ""}</div>`).join("");
+async function refreshRun() { try { draw(await get({action:"run", runId:RUN})); } catch (e) { err(e.message); } }
+function actRow(a) {
+  const gate = a.scope !== "crop-wave", [stx, cls] = statusOf(a), reOpen = !!OPEN["re" + a.id], h = a.history || [], team = (a.assigneeIds || []).map(String);
+  return `<div class="ar ${gate ? "gatebox" : ""}">
+    <div><b>${esc_(a.id)} · ${esc_(a.name)}</b> <span class="badge ${cls}">${esc_(stx)}</span></div>
+    <div class="k">${esc_(a.phase || "")}${a.timing ? " · " + esc_(a.timing) : ""}${gate ? " · " + esc_(a.scope) + " gate" : ""}${a.locked ? " · locked until the gates are verified" : ""}</div>
+    ${a.description ? `<div class="desc">${esc_(a.description)}</div>` : ""}
+    <div class="k"><b>Team:</b> ${a.assignee ? esc_(nice(a.assignee)) + (a.due ? " · due " + when(a.due) : "") : "nobody yet, assign it from the list above"}</div>
+    ${a.sessions && a.sessions.length ? `<div class="k"><b>Working now:</b> ${a.sessions.map(s => `${esc_(s.by || "n/a")} since ${when(s.since)} (wave ${esc_(s.wave)})`).join("; ")}</div>` : ""}
+    ${a.completed ? `<div class="k"><b>Completed by worker:</b> ${when(a.completedAt)} by ${esc_(a.completedBy || "n/a")}${a.count ? " · " + esc_(a.count) + " " + esc_(a.unit) : ""}</div>` : ""}
+    ${a.verified ? `<div class="k"><b>Verified:</b> ${when(a.verifiedAt)}${a.verifiedBy ? " by " + esc_(a.verifiedBy) : ""}${a.verifyNotes ? " · " + esc_(a.verifyNotes) : ""}</div>` : ""}
+    ${a.overridden ? `<div class="note"><b>Overridden</b> by ${esc_(a.overrideBy)} on ${when(a.overrideAt)}: ${esc_(a.overrideReason)}</div>` : ""}
+    <div class="r">
+      ${a.assignee && !a.completed ? `<button type="button" data-re="${esc_(a.id)}">${reOpen ? "Cancel" : "Reassign"}</button>` : ""}
+      ${a.completed && !a.verified ? `<input data-note="${esc_(a.id)}" placeholder="Verification notes" size="26"><button type="button" data-v="${esc_(a.id)}">Verify</button><button type="button" class="alt" data-reopen="${esc_(a.id)}">Reopen</button>` : ""}
+    </div>
+    ${reOpen ? `<div class="pane">${teamBox("re-" + a.id, team)}<div class="r"><label>Due<input type="date" data-due="${esc_(a.id)}" value="${esc_(String(a.due || "").slice(0, 10))}"></label><button type="button" data-resave="${esc_(a.id)}">Save reassignment</button></div><div class="k">Untick the workers being replaced and tick the new ones. The change is recorded as from → to.</div></div>` : ""}
+    ${gate && !a.overridden && !a.verified ? `<details><summary>Manager override</summary><div class="r"><input data-why="${esc_(a.id)}" placeholder="Reason (required)" size="30"><button type="button" class="alt" data-ov="${esc_(a.id)}">Override gate</button></div></details>` : ""}
+    ${h.length ? `<details><summary>Assignment history (${h.length})</summary>${histHtml(a)}</details>` : ""}</div>`;
+}
+async function onActs(e) {
+  const b = e.target.closest("button"); if (!b) return; const box = $("myacts"), val = (k, id) => (box.querySelector(`[data-${k}="${id}"]`) || {}).value || "", d = b.dataset;
+  try {
+    if (d.re) { OPEN["re" + d.re] = !OPEN["re" + d.re]; return draw(ST); }
+    if (d.resave) { const t = teamVal(box.querySelector(`[data-team="re-${d.resave}"]`)); if (!t.workerIds.length && !t.name) return err("Tick at least one worker.");
+      OPEN["re" + d.resave] = false; draw(await post({action:"assignTo", runId:RUN, activityId:d.resave, workerIds:t.workerIds, name:t.name, due:val("due", d.resave), user:$("who").value})); return changed(); }
+    if (d.v) { draw(await post({action:"verify", runId:RUN, activityId:d.v, pin:$("pin").value, user:$("who").value, notes:val("note", d.v)})); $("pin").value = ""; return changed(); }
+    if (d.reopen) { if (!confirm("Send this activity back as not done? Its verification is cleared; the worker's log entry stays.")) return;
+      draw(await post({action:"reopen", runId:RUN, activityId:d.reopen, pin:$("pin").value, user:$("who").value})); $("pin").value = ""; return changed(); }
+    if (d.ov) { draw(await post({action:"override", runId:RUN, activityId:d.ov, pin:$("pin").value, reason:val("why", d.ov), user:$("who").value})); $("pin").value = ""; return changed(); }
+  } catch (x) { err(x.message); }
+}
+
+function draw(st) {
+  ST = st;
+  $("astat").innerHTML = st.notApplicable ? '<p class="k">Direct-seeded run: no gates.</p>' : st.ready ? '<p class="chip">Ready: Phase 2 and later are unlocked.</p>' : '<p class="chip red">Phases 2+ locked until the gates are completed and verified.</p>';
+  drawPicker(st);
+  $("myacts").innerHTML = st.activities.length ? st.activities.map(actRow).join("") : `<p class="k">No activities in this run yet.</p>`;
+  $("myacts").onclick = onActs; $("assign").onclick = assign;
+}
+async function assign() {
+  const ids = [...$("picker").querySelectorAll("input:checked")].map(i => i.value); if (!ids.length) return err("Tick at least one activity.");
+  const t = teamVal($("teampick").firstElementChild); if (!t.workerIds.length && !t.name) return err("Tick at least one worker.");
+  try { const st = await post({action:"assign", runId:RUN, activityIds:ids, workerIds:t.workerIds, name:t.name, due:$("due").value, user:$("who").value});
+    $("teampick").innerHTML = ""; $("due").value = ""; draw(st); changed(); } catch (e) { err(e.message); }
+}
+
+function task() {
   const crops = DASH.params.map(c => `<option value="${c.crop_code}">${c.crop_code} · ${esc(c.crop_name)}</option>`).join("");
   $("v-task").innerHTML = `<div class="card"><h2>New batch</h2><div class="row"><select id="nc">${crops}</select><select id="np"></select><input id="nd" type="date"><button id="mk">Create run</button></div><p class="k" id="fw"></p></div>
-  <div class="card"><h2>Run</h2><div class="row"><select id="rs"><option value="">Select a run</option>${DASH.runs.map(r => `<option>${esc(r.run_id)}</option>`).join("")}</select><input id="who" placeholder="Your name"><input id="pin" type="password" placeholder="Manager PIN"></div><div id="acts"></div></div>`;
+  <div class="card"><h2>Run</h2><div class="row"><select id="rs"><option value="">Select a run</option>${DASH.runs.map(r => `<option>${esc(r.run_id)}</option>`).join("")}</select><input id="who" placeholder="Your name"><input id="pin" type="password" placeholder="Manager PIN (verify, reopen, override)"></div>
+    <p class="k">The manager assigns, reassigns and verifies. Workers start, time and submit the work on their phones.</p><div id="acts"></div></div>
+  <div class="card"><h2>Assignments</h2><div class="row"><label class="k">Worker <select id="afw"><option value="">All workers</option></select></label><label class="k">Show <select id="afs"><option value="">All runs</option><option value="this">Current run only</option></select></label><button id="arf" class="alt" type="button">Refresh</button></div>
+    <h3>Who has what now</h3><div class="t" id="acur"><p class="k">Loading…</p></div><h3>Log of assignments and reassignments</h3><div class="t" id="alogt"></div></div>`;
   const dest = () => { const c = $("nc").value; $("np").innerHTML = DASH.rulebook.filter(r => r.crop_code === c).map(r => `<option value="${r.platform}">${r.platform === "F" ? "Field" : "Greenhouse"} · ${esc(r.planting_location)}</option>`).join("");
     $("fw").textContent = direct(c) ? "Direct-seeded: no nursery, so no pre-sowing gate." : "Firewall: ACT-101 to ACT-105 and ACT-607 must be completed and manager-verified before Phase 2 (ACT-201 onward) unlocks."; };
   $("nc").onchange = dest; dest();
-  $("mk").onclick = async () => { try { if (!$("nd").value) throw new Error("Pick a planting date."); const r = await post({action:"saveRun", crop:$("nc").value, platform:$("np").value, dob:$("nd").value}); await load(); RUN = r.runId; task(); $("rs").value = RUN; acts(); err(""); } catch (e) { err(e.message); } };
-  $("rs").onchange = () => { RUN = $("rs").value; acts(); }; if (RUN) { $("rs").value = RUN; acts(); }
+  $("who").value = WHO; $("who").oninput = () => WHO = $("who").value;
+  $("mk").onclick = async () => { try { if (!$("nd").value) throw new Error("Pick a planting date."); const r = await post({action:"saveRun", crop:$("nc").value, platform:$("np").value, dob:$("nd").value}); await load(); strip(); RUN = r.runId; task(); $("rs").value = RUN; acts(); err(""); } catch (e) { err(e.message); } };
+  $("rs").onchange = () => { $("acts").innerHTML = ""; RUN = $("rs").value; acts(); };
+  $("afw").onchange = $("afs").onchange = drawAssign; $("arf").onclick = loadAssign;
+  if (RUN) { $("rs").value = RUN; acts(); }
+  loadAssign();
 }
 async function acts() {
   if (!RUN) { $("acts").innerHTML = ""; return; }
   try { const s = await get({action:"run", runId:RUN});
-    $("acts").innerHTML = (s.notApplicable ? '<p class="k">Direct-seeded run: no gates.</p>' : s.ready ? '<p class="chip">Ready: Phase 2 and later are unlocked.</p>' : '<p class="chip red">Phases 2+ locked until the gates are completed and verified.</p>') +
-      s.activities.map(a => `<div class="act ${a.locked ? "lock" : ""}" data-a="${a.id}"><b>${a.id}</b> ${esc(a.name)} <span class="k">${esc(a.timing)}</span>${a.locked ? '<span class="k">🔒 locked</span>' : `${a.requiresCount ? `<input data-c placeholder="Count" size="6" value="${esc(a.count)}"><input data-u placeholder="Unit" size="6" value="${esc(a.unit)}">` : ""}<label><input type="checkbox" data-d ${a.completed ? "checked" : ""}> done</label>${a.completed && !a.verified ? '<button data-v>Verify</button>' : ""}${a.verified ? '<span class="chip" style="flex:0">Verified</span>' : ""}`}</div>`).join("");
-    $("acts").querySelectorAll(".act").forEach(row => { const id = row.dataset.a, d = row.querySelector("[data-d]"), v = row.querySelector("[data-v]");
-      if (d) d.onchange = async () => { try { await post({action:"complete", runId:RUN, activityId:id, completed:d.checked, count:(row.querySelector("[data-c]") || {}).value || "", unit:(row.querySelector("[data-u]") || {}).value || "", user:$("who").value}); err(""); await load(); acts(); } catch (e) { d.checked = !d.checked; err(e.message); } };
-      if (v) v.onclick = async () => { try { await post({action:"verify", runId:RUN, activityId:id, pin:$("pin").value, user:$("who").value}); $("pin").value = ""; err(""); await load(); acts(); } catch (e) { err(e.message); } }; });
+    if (!$("picker")) $("acts").innerHTML = `<div id="astat"></div><h3>1 · Pick activities</h3><div id="picker"></div><h3>2 · Pick workers</h3><div id="teampick"></div><div class="row"><label class="k">Due date (optional) <input type="date" id="due"></label><button id="assign">Assign</button></div><h3>In this run</h3><div id="myacts"></div>`;
+    draw(s); err("");
   } catch (e) { err(e.message); }
 }
 
@@ -126,6 +221,8 @@ async function load() { DASH = await get({action:"dash"}); }
 (async () => {
   if (!API_URL) { err("Set API_URL at the top of this file to your deployed Apps Script web app URL (see README)."); return; }
   try { await load(); } catch (e) { err("Cannot reach the API: " + e.message); return; }
+  try { WORKERS = (await get({action:"workers"})).workers; } catch (e) {}
+  try { REF = (await get({action:"activities"})).activities; } catch (e) {}
   show("home"); strip(); home(); plan(); task(); hw(); setInterval(strip, 30000);
   document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => { if (b.dataset.v === "home") home(); if (b.dataset.v === "plan") { load().then(plan); } }));
 })();
