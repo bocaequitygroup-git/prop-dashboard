@@ -86,28 +86,24 @@ async function call(url, opt) {
 const post = b => call(API_URL, {method:"POST", headers:hdr, body:JSON.stringify({...b, token: M ? M.token : undefined})});
 const nowMs = () => MODE === "live" ? Date.now() + OFFSET : (D ? D.now : Date.now());
 const MGR = /^(manager|founder)$/i;
-const isMgr = () => !!M && MGR.test(M.role) && MODE === "live";
+const isMgr = () => !!M && MODE === "live";   // only Manager/Founder accounts can sign in here (boardLogin), and the server re-checks every write
 
 async function load(quiet) {
-  if (!M) { D = null; render(); return; }
   if (MODE === "offline" && FORCED) return;
   SYNCING = true; status();
   try {
-    const d = await post({action:"dashboard"});
-    if (!M) return;
-    D = d; OFFSET = d.now - Date.now(); MODE = "live"; SNAP = new Date().toISOString(); ERR = ""; LS.set("pd_snap", {saved:SNAP, data:D, user:M.id});
+    const d = await call(API_URL + "?" + new URLSearchParams({action:"monitor"}));
+    D = d; OFFSET = d.now - Date.now(); MODE = "live"; SNAP = new Date().toISOString(); ERR = ""; LS.set("pd_snap", {saved:SNAP, data:D});
   } catch (e) {
-    if (!M) return;
     ERR = /Unknown action/.test(e.message) ? "The server has no dashboard feed yet. Deploy the latest Code_pro.gs as a new version." : e.message;
-    if (!D) { const s = LS.get("pd_snap"); if (s && s.data && s.user === M.id) { D = s.data; SNAP = s.saved; } }
+    if (!D) { const s = LS.get("pd_snap"); if (s && s.data) { D = s.data; SNAP = s.saved; } }
     if (D) MODE = "offline";
     if (!quiet) toast(ERR, true);
   } finally { SYNCING = false; }
   render();
 }
 function status() {
-  const el = $("status"); if (!M) { el.className = "off"; el.innerHTML = `<span class="dot"></span><b>Signed out</b><span>Sign in to see the board.</span>`; return; }
-  const age = SNAP ? Math.round((Date.now() - Date.parse(SNAP)) / 60000) : 0;
+  const el = $("status"), age = SNAP ? Math.round((Date.now() - Date.parse(SNAP)) / 60000) : 0;
   if (SYNCING) { el.className = ""; el.innerHTML = `<span class="dot"></span><b>Syncing…</b>`; return; }
   const btns = `<button class="alt sm" type="button" data-a="refresh" aria-label="Refresh now">↻ Refresh</button>`;
   if (MODE === "live") { el.className = ""; el.innerHTML = `<span class="dot"></span><b>Live</b><span>synced ${esc(clock(SNAP))}</span><span class="sp"></span><span>${new Date().toLocaleDateString(undefined, {weekday:"short", month:"short", day:"numeric", year:"numeric"})}</span>${btns}<button class="alt sm" type="button" data-a="offline">Use snapshot instead</button>`; return; }
@@ -121,26 +117,20 @@ async function write(label, fn) { toast(label + "…"); document.body.style.curs
 function authBar() {
   $("auth").innerHTML = M
     ? `<span><b>${esc(M.name)}</b> <span class="k">${esc(M.role)}</span></span><button class="alt sm" type="button" data-a="signout">Sign out</button>`
-    : "";
+    : `<label class="k">Worker ID <input id="uid" autocomplete="username" autocapitalize="none" spellcheck="false" style="width:130px"></label><label class="k">PIN <input id="upin" type="password" inputmode="numeric" autocomplete="current-password" style="width:100px"></label><button type="button" class="sm" data-a="signin" id="bIn">Manager sign in</button>`;
   $("bTheme").textContent = document.documentElement.dataset.theme === "night" ? "Sun" : "Night";
-}
-function loginCard() {
-  return `<section class="card" style="max-width:420px;margin:6vh auto 0;width:100%"><div class="hd"><span class="ic" aria-hidden="true">🔒</span><div><h2>Sign in</h2><span class="k">The board is private. Use your Worker ID and PIN.</span></div></div>
-    <div class="frm" style="flex-direction:column;align-items:stretch"><label class="k">Worker ID<input id="uid" autocomplete="username" autocapitalize="none" spellcheck="false" style="width:100%" placeholder="e.g. lisa"></label>
-    <label class="k">PIN<input id="upin" type="password" inputmode="numeric" autocomplete="current-password" style="width:100%"></label>
-    <button type="button" data-a="signin" id="bIn">Sign in</button></div>
-    <p class="k">Anyone on the team can view. Verifying gates and resolving alerts need a Manager or Founder account.</p></section>`;
 }
 async function signIn() {
   const u = $("uid").value.trim(), p = $("upin").value; if (!u || !p) return toast("Enter your Worker ID and PIN.", true);
   $("bIn").disabled = true;
-  try { const r = await post({action:"login", workerId:u, pin:p, device:navigator.userAgent, app:"dashboard"});
-    M = {token:r.token, name:r.user.name, role:r.user.role, id:r.user.workerId}; LS.set("pd_session", M); LAST = Date.now(); MODE = "live"; FORCED = false; D = null; authBar(); load(); }
+  if (MODE !== "live") { $("bIn").disabled = false; return toast("Go live first: signing in needs the server.", true); }
+  try { const r = await post({action:"boardLogin", user:u, pin:p, device:navigator.userAgent});
+    M = {token:r.token, name:r.user.name, role:r.user.role, id:r.user.workerId}; LS.set("pd_session", M); LAST = Date.now(); authBar(); render(); toast("Signed in: " + M.name); }
   catch (e) { toast(e.message, true); const pi = $("upin"); if (pi) pi.value = ""; }
   finally { const b = $("bIn"); if (b) b.disabled = false; }
 }
 function signOut(msg) {
-  const t = M && M.token; M = null; D = null; SNAP = null; ERR = ""; MODE = "live"; FORCED = false; LS.set("pd_session", null); LS.set("pd_snap", null);
+  const t = M && M.token; M = null; LS.set("pd_session", null);
   if (t) { try { fetch(API_URL, {method:"POST", headers:hdr, body:JSON.stringify({action:"logout", token:t})}).catch(() => {}); } catch (e) {} }
   authBar(); render(); if (msg) toast(msg);
 }
@@ -189,7 +179,7 @@ function secPending() {
   const row = ({r, g}) => `<div class="it"><span class="t"><b>${esc(r.cropName)}</b> · ${esc(r.runId)}<br><span class="k">${esc(g.id)} ${esc(g.name)}${g.completedBy ? " · done by " + esc(g.completedBy) : ""}</span></span><button type="button" class="sm" data-a="verify" data-run="${esc(r.runId)}" data-id="${esc(g.id)}" ${mg ? "" : "disabled"}>Verify</button></div>`;
   const brow = x => `<div class="it"><span class="t"><b>${esc(x.r.cropName)} W${x.w.wave}</b> · ${esc(x.r.runId)}<br><span class="k">${x.d < 0 ? "Sow date passed " + (-x.d) + " d ago" : x.d === 0 ? "Sow today" : "Sow in " + x.d + " d (" + fmtS(x.w.sow) + ")"} · ${esc(x.r.propLocation || "")}</span></span><span class="badge ${x.d <= 0 ? "bad" : "wait"}">${x.left.length} of ${x.r.gates.filter(g => g.scope === "pre-sowing").length} gates open</span></div>`;
   const opts = p.map(({r, g}) => `<option value="${esc(r.runId)}|${esc(g.id)}">${esc(r.cropName)} · ${esc(r.runId)} · ${esc(g.id)} ${esc(g.name)}</option>`).join("");
-  const body = `${mg ? "" : `<div class="note">View only. A Manager or Founder account is needed to verify.</div>`}
+  const body = `${mg ? "" : `<div class="note">View only. Sign in as a manager to verify.</div>`}
     <h3>Gate steps done, awaiting verification (${p.length})</h3>${p.length ? `<div class="g">${p.map(row).join("")}</div>` : `<p class="k">None. A step appears here once a worker (or a manager) marks it done.</p>`}
     <h3>Benches blocking an upcoming sow (${b.length}) · pre-sowing gates not cleared</h3>${b.length ? `<div class="g">${b.map(brow).join("")}</div>` : `<p class="k">No sow in the next 14 days is waiting on a bench gate.</p>`}
     <h3>Verify a done step by ID</h3><div class="frm"><select id="vsel" aria-label="Step to verify" ${p.length ? "" : "disabled"}>${opts || `<option>No steps awaiting verification</option>`}</select><input type="text" id="vnote" data-d="vnote" value="${esc(DRAFT.vnote || "")}" placeholder="Verification notes (optional)" aria-label="Verification notes"><button type="button" data-a="verifysel" ${mg && p.length ? "" : "disabled"}>Verify ready</button></div>
@@ -237,7 +227,7 @@ function secExceptions() {
   const row = a => `<div class="it" style="display:block"><b>${esc(a.reason)}</b> · ${esc(a.worker_name)}<br><span class="k">${esc(a.activity_name)} · ${esc(a.crop_code)} · ${esc(a.location)} · open ${esc(ago(a.created_at, now))}${a.note ? " · “" + esc(a.note) + "”" : ""}</span>
     <div class="frm"><input type="text" data-d="ra|${esc(a.alert_id)}" value="${esc(DRAFT["ra|" + a.alert_id] || "")}" placeholder="What was done (required)" aria-label="Resolution note"><button type="button" class="sm" data-a="resolve" data-id="${esc(a.alert_id)}" ${mg ? "" : "disabled"}>Resolve</button></div></div>`;
   return sec("⚠", "Exception Overrides", "Open stall alerts · manager resolves with a note", o.length,
-    (o.length ? `<div class="g">${o.map(row).join("")}</div>` : `<p class="k">✅ No open exceptions.</p>`) + (mg || !o.length ? "" : `<div class="note">A Manager or Founder account is needed to resolve.</div>`) +
+    (o.length ? `<div class="g">${o.map(row).join("")}</div>` : `<p class="k">✅ No open exceptions.</p>`) + (mg || !o.length ? "" : `<div class="note">Sign in as a manager to resolve.</div>`) +
     (done.length ? `<details><summary>Recently resolved (${done.length})</summary>${done.map(a => `<div class="k" style="padding:3px 0">${when(a.resolved_at)} · ${esc(a.worker_name)} · ${esc(a.activity_name)} · ${esc(a.reason)}${a.stall_min !== "" && a.stall_min != null ? " · " + esc(a.stall_min) + " min" : ""}${a.resolution ? " · " + esc(a.resolution) : ""}</div>`).join("")}</details>` : ""));
 }
 function secLog() {
@@ -249,19 +239,17 @@ function secLog() {
 function render() {
   authBar(); status();
   const m = $("main");
-  if (!M) { if (!m.querySelector("#uid")) m.innerHTML = loginCard(); return; }
   if (!D) { m.innerHTML = `<div class="note">${esc(ERR || "Connecting…")}</div>`; return; }
-  const ae = document.activeElement; if (!m.querySelector("#uid") && ae && m.contains(ae) && /^(INPUT|SELECT|TEXTAREA)$/.test(ae.tagName)) return;   // do not wipe what someone is typing
+  const ae = document.activeElement; if (ae && m.contains(ae) && /^(INPUT|SELECT|TEXTAREA)$/.test(ae.tagName)) return;   // do not wipe what someone is typing
   const open = new Set([...m.querySelectorAll("details[open]")].map(d => d.querySelector("summary").textContent));
-  m.innerHTML = kpis() + secPending() + secActive() + secCalendar() + secWatch() + secWorkers() + secExceptions() + secLog() + `<p class="k">Source: live Apps Script connection. You must be signed in to see this board; verifying and resolving need a Manager or Founder account and are recorded under your name.</p>`;
+  m.innerHTML = kpis() + secPending() + secActive() + secCalendar() + secWatch() + secWorkers() + secExceptions() + secLog() + `<p class="k">Source: live Apps Script connection. Reading is open; verifying and resolving need a manager sign-in and are recorded under your name.</p>`;
   m.querySelectorAll("details").forEach(d => { if (open.has(d.querySelector("summary").textContent)) d.open = true; });
 }
 
 /* ---------- actions ---------- */
 function gate() {
   if (MODE !== "live") { toast("Snapshot is read-only. Go live first.", true); return false; }
-  if (!M) { toast("Sign in first.", true); return false; }
-  if (!MGR.test(M.role)) { toast("Only a Manager or Founder can do that.", true); return false; }
+  if (!M) { toast("Sign in as a manager to do that.", true); const u = $("uid"); if (u) u.focus(); return false; }
   return true;
 }
 async function doVerify(run, id, notes) {
@@ -277,8 +265,8 @@ document.addEventListener("click", e => {
   switch (d.a) {
     case "theme": { const n = document.documentElement.dataset.theme === "night" ? "sun" : "night"; document.documentElement.dataset.theme = n; LS.set("pd_theme", n); authBar(); break; }
     case "signin": signIn(); break; case "signout": signOut("Signed out"); break;
-    case "refresh": if (!M) break; FORCED = false; MODE = "live"; load(); break;
-    case "offline": if (!M) break; if (!D) return toast("No snapshot saved on this device yet.", true); MODE = "offline"; FORCED = true; render(); break;
+    case "refresh": FORCED = false; MODE = "live"; load(); break;
+    case "offline": if (!D) return toast("No snapshot saved on this device yet.", true); MODE = "offline"; FORCED = true; render(); break;
     case "live": FORCED = false; MODE = "live"; load(); break;
     case "verify": if (gate()) doVerify(d.run, d.id, ""); break;
     case "verifysel": if (gate()) { const v = ($("vsel").value || "").split("|"); if (v.length === 2) doVerify(v[0], v[1], (DRAFT.vnote || "").trim()); } break;
@@ -289,8 +277,8 @@ document.addEventListener("keydown", e => { if (e.key === "Enter" && e.target.id
 document.addEventListener("input", e => { const k = e.target.dataset && e.target.dataset.d; if (k) DRAFT[k] = e.target.value; });
 ["pointerdown", "keydown", "touchstart"].forEach(ev => document.addEventListener(ev, () => { LAST = Date.now(); }, {passive:true}));
 document.documentElement.dataset.theme = LS.get("pd_theme") === "night" ? "night" : "sun";
-setInterval(() => { if (M && !document.hidden && !(MODE === "offline" && FORCED)) load(true); }, POLL_MS);
-setInterval(() => { if (M && Date.now() - LAST > IDLE_MS) signOut("Signed out after 15 minutes without use."); }, 30000);
-document.addEventListener("visibilitychange", () => { if (M && !document.hidden && !(MODE === "offline" && FORCED) && Date.now() - Date.parse(SNAP || 0) > 30000) load(true); });
-authBar(); render(); if (M) load();
+setInterval(() => { if (!document.hidden && !(MODE === "offline" && FORCED)) load(true); }, POLL_MS);
+setInterval(() => { if (M && Date.now() - LAST > IDLE_MS) signOut("Manager sign-in ended after 15 minutes without use."); }, 30000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden && !(MODE === "offline" && FORCED) && Date.now() - Date.parse(SNAP || 0) > 30000) load(true); });
+authBar(); load();
 </script></body></html>
