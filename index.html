@@ -23,6 +23,7 @@ header{position:sticky;top:0;z-index:10;background:var(--card);border-bottom:2px
 main{max-width:1180px;margin:0 auto;padding:14px;display:grid;gap:14px}
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
 .kp{background:var(--card);border:2px solid var(--edge);border-radius:12px;padding:10px 12px}.kp b{display:block;font-size:28px;line-height:1.1}.kp.hot{background:var(--warns);border-color:var(--warnb)}.kp.bad{background:var(--bads);border-color:var(--bad)}
+#login{position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.6);display:grid;place-items:center;padding:16px}#login .card{width:min(360px,100%);display:grid;gap:12px;background:var(--card);border:2px solid var(--edge);border-radius:14px;padding:16px}#login label{display:grid;gap:4px;font-weight:700}#login input{width:100%}.lerr{background:var(--bads);color:var(--bad);border:2px solid var(--bad);border-radius:10px;padding:8px 10px;font-weight:700}
 section.card{background:var(--card);border:2px solid var(--edge);border-radius:14px;padding:12px 14px}
 section.card>.hd{display:flex;gap:10px;align-items:center;margin-bottom:6px}.hd .ic{font-size:22px}.hd .n{font-weight:700;min-width:28px;text-align:center;border:2px solid var(--edge);border-radius:99px;padding:0 8px}
 .g{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px}
@@ -50,6 +51,12 @@ details>summary{cursor:pointer;font-weight:700;min-height:32px}
 </header>
 <div id="status"></div>
 <main id="main"></main>
+<div id="login" class="hidden" role="dialog" aria-modal="true" aria-labelledby="lgt"><div class="card">
+<h2 id="lgt" style="margin:0">Manager sign in</h2>
+<label>User name <input id="uid" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"></label>
+<label>PIN <input id="upin" type="password" inputmode="numeric" autocomplete="current-password"></label>
+<div id="lerr" class="lerr hidden" role="alert"></div>
+<div class="row" style="margin:0"><button id="bIn" type="button" data-a="signin">Sign in</button><button type="button" class="alt" data-a="logincancel">Cancel</button></div></div></div>
 <div id="toast" class="hidden" role="status" aria-live="polite"></div>
 
 <script>
@@ -117,17 +124,20 @@ async function write(label, fn) { toast(label + "…"); document.body.style.curs
 function authBar() {
   $("auth").innerHTML = M
     ? `<span><b>${esc(M.name)}</b> <span class="k">${esc(M.role)}</span></span><button class="alt sm" type="button" data-a="signout">Sign out</button>`
-    : `<label class="k">Worker ID <input id="uid" autocomplete="username" autocapitalize="none" spellcheck="false" style="width:130px"></label><label class="k">PIN <input id="upin" type="password" inputmode="numeric" autocomplete="current-password" style="width:100px"></label><button type="button" class="sm" data-a="signin" id="bIn">Manager sign in</button>`;
+    : `<button type="button" class="sm" data-a="login">Manager sign in</button>`;
   $("bTheme").textContent = document.documentElement.dataset.theme === "night" ? "Sun" : "Night";
 }
+function loginErr(m) { const el = $("lerr"); el.textContent = m || ""; el.classList.toggle("hidden", !m); }
+function openLogin() { $("uid").value = ""; $("upin").value = ""; loginErr(""); $("login").classList.remove("hidden"); setTimeout(() => $("uid").focus(), 0); }
+function closeLogin() { $("login").classList.add("hidden"); $("upin").value = ""; }
 async function signIn() {
-  const u = $("uid").value.trim(), p = $("upin").value; if (!u || !p) return toast("Enter your Worker ID and PIN.", true);
-  $("bIn").disabled = true;
-  if (MODE !== "live") { $("bIn").disabled = false; return toast("Go live first: signing in needs the server.", true); }
+  const u = $("uid").value.trim(), p = $("upin").value; if (!u || !p) return loginErr("Enter your user name and PIN.");
+  if (MODE !== "live") return loginErr("Go live first: signing in needs the server.");
+  const b = $("bIn"); b.disabled = true; b.textContent = "Signing in…"; loginErr("");
   try { const r = await post({action:"boardLogin", user:u, pin:p, device:navigator.userAgent});
-    M = {token:r.token, name:r.user.name, role:r.user.role, id:r.user.workerId}; LS.set("pd_session", M); LAST = Date.now(); authBar(); render(); toast("Signed in: " + M.name); }
-  catch (e) { toast(e.message, true); const pi = $("upin"); if (pi) pi.value = ""; }
-  finally { const b = $("bIn"); if (b) b.disabled = false; }
+    M = {token:r.token, name:r.user.name, role:r.user.role, id:r.user.workerId}; LS.set("pd_session", M); LAST = Date.now(); closeLogin(); authBar(); render(); toast("Signed in: " + M.name); }
+  catch (e) { loginErr(e.message); $("upin").value = ""; $("upin").focus(); }
+  finally { b.disabled = false; b.textContent = "Sign in"; }
 }
 function signOut(msg) {
   const t = M && M.token; M = null; LS.set("pd_session", null);
@@ -264,7 +274,7 @@ document.addEventListener("click", e => {
   LAST = Date.now(); const b = e.target.closest("[data-a]"); if (!b) return; const d = b.dataset;
   switch (d.a) {
     case "theme": { const n = document.documentElement.dataset.theme === "night" ? "sun" : "night"; document.documentElement.dataset.theme = n; LS.set("pd_theme", n); authBar(); break; }
-    case "signin": signIn(); break; case "signout": signOut("Signed out"); break;
+    case "login": openLogin(); break; case "logincancel": closeLogin(); break; case "signin": signIn(); break; case "signout": signOut("Signed out"); break;
     case "refresh": FORCED = false; MODE = "live"; load(); break;
     case "offline": if (!D) return toast("No snapshot saved on this device yet.", true); MODE = "offline"; FORCED = true; render(); break;
     case "live": FORCED = false; MODE = "live"; load(); break;
@@ -273,7 +283,7 @@ document.addEventListener("click", e => {
     case "resolve": if (gate()) doResolve(d.id); break;
   }
 });
-document.addEventListener("keydown", e => { if (e.key === "Enter" && e.target.id === "upin") signIn(); });
+document.addEventListener("keydown", e => { if (e.key === "Enter" && (e.target.id === "upin" || e.target.id === "uid")) signIn(); if (e.key === "Escape" && !$("login").classList.contains("hidden")) closeLogin(); });
 document.addEventListener("input", e => { const k = e.target.dataset && e.target.dataset.d; if (k) DRAFT[k] = e.target.value; });
 ["pointerdown", "keydown", "touchstart"].forEach(ev => document.addEventListener(ev, () => { LAST = Date.now(); }, {passive:true}));
 document.documentElement.dataset.theme = LS.get("pd_theme") === "night" ? "night" : "sun";
