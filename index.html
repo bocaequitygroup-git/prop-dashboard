@@ -260,7 +260,7 @@ function render() {
   if (!D) { m.innerHTML = `<div class="note">${esc(ERR || "Connecting…")}</div>`; return; }
   const ae = document.activeElement; if (ae && m.contains(ae) && /^(INPUT|SELECT|TEXTAREA)$/.test(ae.tagName)) return;   // do not wipe what someone is typing
   const open = new Set([...m.querySelectorAll("details[open]")].map(d => d.querySelector("summary").textContent));
-  m.innerHTML = kpis() + secPending() + secActive() + secCalendar() + secWatch() + secWorkers() + secExceptions() + secLog() + `<p class="k">Source: live Apps Script connection. Reading is open; verifying and resolving need a manager sign-in and are recorded under your name.</p>`;
+  m.innerHTML = kpis() + secPending() + secActive() + secCalendar() + secWatch() + secWorkers() + secExceptions() + secLog() + `<p class="k">Source: live Apps Script connection. Reading is open; verifying and resolving need a manager sign-in and are recorded under your name. <span title="If this line is missing you are looking at an older copy of the file">Build: sign-in v3.</span></p>`;
   m.querySelectorAll("details").forEach(d => { if (open.has(d.querySelector("summary").textContent)) d.open = true; });
 }
 
