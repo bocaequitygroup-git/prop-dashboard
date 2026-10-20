@@ -81,7 +81,7 @@ const pf = p => p === "F" ? "Field" : p === "G" ? "Greenhouse" : p;
 const KIND = {DIRECT_CLOSE:"Direct close", GATE_OVERRIDE:"Gate override", LEAF_OVERRIDE:"First-leaf override", ALERT_RESOLVED:"Alert resolved", ASSIGN:"Assigned", REASSIGN:"Reassigned", UNASSIGN:"Removed"};
 
 /* ---------- state + network ---------- */
-let M = LS.get("pd_session"), D = null, SNAP = null, MODE = "live", FORCED = false, ERR = "", SYNCING = false, OFFSET = 0, LAST = Date.now();
+let M = LS.get("pd_session"), D = null, SNAP = null, MODE = "live", FORCED = false, ERR = "", SYNCING = false, OFFSET = 0, LAST = Date.now(), NEED = false, ASKED = false;   // NEED: the server wants a manager sign-in before it sends data
 const DRAFT = {};
 const hdr = {"Content-Type":"text/plain;charset=utf-8"};
 async function call(url, opt) {
@@ -99,9 +99,15 @@ async function load(quiet) {
   if (MODE === "offline" && FORCED) return;
   SYNCING = true; status();
   try {
-    const d = await call(API_URL + "?" + new URLSearchParams({action:"monitor"}));
-    D = d; OFFSET = d.now - Date.now(); MODE = "live"; SNAP = new Date().toISOString(); ERR = ""; LS.set("pd_snap", {saved:SNAP, data:D});
+    const d = await call(API_URL + "?" + new URLSearchParams(M ? {action:"monitor", token:M.token} : {action:"monitor"}));
+    NEED = false; ASKED = false; D = d; OFFSET = d.now - Date.now(); MODE = "live"; SNAP = new Date().toISOString(); ERR = ""; LS.set("pd_snap", {saved:SNAP, data:D});
   } catch (e) {
+    if (/sign.?in required|^AUTH|not signed in|session (ended|expired)|invalid token/i.test(e.message)) {   // data is behind the manager sign-in: ask for it instead of showing an error
+      if (M) { M = null; LS.set("pd_session", null); }
+      NEED = true; D = null; SNAP = null; ERR = ""; SYNCING = false; authBar();
+      if (!ASKED) { ASKED = true; openLogin(); }
+      render(); return;
+    }
     ERR = /Unknown action/.test(e.message) ? "The server has no dashboard feed yet. Deploy the latest Code_pro.gs as a new version." : e.message;
     if (!D) { const s = LS.get("pd_snap"); if (s && s.data) { D = s.data; SNAP = s.saved; } }
     if (D) MODE = "offline";
@@ -113,6 +119,7 @@ function status() {
   const el = $("status"), age = SNAP ? Math.round((Date.now() - Date.parse(SNAP)) / 60000) : 0;
   if (SYNCING) { el.className = ""; el.innerHTML = `<span class="dot"></span><b>Syncing…</b>`; return; }
   const btns = `<button class="alt sm" type="button" data-a="refresh" aria-label="Refresh now">↻ Refresh</button>`;
+  if (NEED && !D) { el.className = "err"; el.innerHTML = `<span class="dot"></span><b>Signed out</b><span>Sign in to load the dashboard.</span><span class="sp"></span>${btns}`; return; }
   if (MODE === "live") { el.className = ""; el.innerHTML = `<span class="dot"></span><b>Live</b><span>synced ${esc(clock(SNAP))}</span><span class="sp"></span><span>${new Date().toLocaleDateString(undefined, {weekday:"short", month:"short", day:"numeric", year:"numeric"})}</span>${btns}<button class="alt sm" type="button" data-a="offline">Use snapshot instead</button>`; return; }
   el.className = ERR ? "err" : "off";
   el.innerHTML = `<span class="dot"></span><b>${D ? "Snapshot" : "Not connected"}</b><span>${SNAP ? "saved " + esc(clock(SNAP)) + " · " + age + " min old · read-only" : esc(ERR || "")}</span>${ERR ? `<span>${esc(ERR)}</span>` : ""}<span class="sp"></span>${btns}${FORCED ? `<button class="alt sm" type="button" data-a="live">Go live</button>` : ""}`;
@@ -135,14 +142,14 @@ async function signIn() {
   if (MODE !== "live") return loginErr("Go live first: signing in needs the server.");
   const b = $("bIn"); b.disabled = true; b.textContent = "Signing in…"; loginErr("");
   try { const r = await post({action:"boardLogin", user:u, pin:p, device:navigator.userAgent});
-    M = {token:r.token, name:r.user.name, role:r.user.role, id:r.user.workerId}; LS.set("pd_session", M); LAST = Date.now(); closeLogin(); authBar(); render(); toast("Signed in: " + M.name); }
+    M = {token:r.token, name:r.user.name, role:r.user.role, id:r.user.workerId}; LS.set("pd_session", M); LAST = Date.now(); closeLogin(); NEED = false; authBar(); render(); toast("Signed in: " + M.name); load(true); }
   catch (e) { loginErr(e.message); $("upin").value = ""; $("upin").focus(); }
   finally { b.disabled = false; b.textContent = "Sign in"; }
 }
 function signOut(msg) {
   const t = M && M.token; M = null; LS.set("pd_session", null);
   if (t) { try { fetch(API_URL, {method:"POST", headers:hdr, body:JSON.stringify({action:"logout", token:t})}).catch(() => {}); } catch (e) {} }
-  authBar(); render(); if (msg) toast(msg);
+  authBar(); render(); if (msg) toast(msg); load(true);   // reading may need the sign-in too: this shows the sign-in prompt if so
 }
 
 /* ---------- derived data ---------- */
@@ -249,6 +256,7 @@ function secLog() {
 function render() {
   authBar(); status();
   const m = $("main");
+  if (!D && NEED) { m.innerHTML = `<div class="note" style="display:grid;gap:8px;justify-items:start"><b>Sign in to see the dashboard</b><span>Ranch data is shown to managers and founders only. Use your user name and PIN.</span><button type="button" data-a="login">Manager sign in</button></div>`; return; }
   if (!D) { m.innerHTML = `<div class="note">${esc(ERR || "Connecting…")}</div>`; return; }
   const ae = document.activeElement; if (ae && m.contains(ae) && /^(INPUT|SELECT|TEXTAREA)$/.test(ae.tagName)) return;   // do not wipe what someone is typing
   const open = new Set([...m.querySelectorAll("details[open]")].map(d => d.querySelector("summary").textContent));
