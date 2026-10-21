@@ -159,7 +159,7 @@ const leafOk = w => !!w.leaf && (w.leaf.outcome === "PASS" || w.leaf.outcome ===
 const nursery = w => (w.phases || []).find(p => p.phase === "Nursery" && p.days > 0);
 const openAlerts = () => D ? D.alerts.filter(a => a.status === "OPEN") : [];
 const flat = () => runs().flatMap(r => r.waves.map(w => ({r, w})));
-const pendingGates = () => runs().flatMap(r => (r.gates || []).filter(g => g.completed && !g.verified && !g.overridden).map(g => ({r, g})));
+const pendingGates = () => ((D && D.unverified) || []).filter(x => x.done && x.scope !== "crop-wave").map(x => ({r: runs().find(r => r.runId === x.runId), g: {id: x.activityId, name: x.activity, completedBy: x.completedBy, logId: x.logId || ""}})).filter(x => x.r);   // one row per worker portion (or direct close) waiting for a manager
 function blocking() {   // an upcoming or overdue sow whose pre-sowing gates are not all cleared
   const t = todayStr(), o = [];
   runs().forEach(r => { if (r.direct) return; const pre = (r.gates || []).filter(g => g.scope === "pre-sowing"), left = pre.filter(g => !gateOk(g));
@@ -193,11 +193,11 @@ function kpis() {
 }
 function secPending() {
   const p = pendingGates(), b = blocking(), mg = isMgr();
-  const row = ({r, g}) => `<div class="it"><span class="t"><b>${esc(r.cropName)}</b> · ${esc(r.runId)}<br><span class="k">${esc(g.id)} ${esc(g.name)}${g.completedBy ? " · done by " + esc(g.completedBy) : ""}</span></span><button type="button" class="sm" data-a="verify" data-run="${esc(r.runId)}" data-id="${esc(g.id)}" ${mg ? "" : "disabled"}>Verify</button></div>`;
+  const row = ({r, g}) => `<div class="it"><span class="t"><b>${esc(r.cropName)}</b> · ${esc(r.runId)}<br><span class="k">${esc(g.id)} ${esc(g.name)}${g.completedBy ? " · done by " + esc(g.completedBy) : ""}</span></span><button type="button" class="sm" data-a="verify" data-run="${esc(r.runId)}" data-id="${esc(g.id)}" data-log="${esc(g.logId)}" ${mg ? "" : "disabled"}>Verify</button></div>`;
   const brow = x => `<div class="it"><span class="t"><b>${esc(x.r.cropName)} W${x.w.wave}</b> · ${esc(x.r.runId)}<br><span class="k">${x.d < 0 ? "Sow date passed " + (-x.d) + " d ago" : x.d === 0 ? "Sow today" : "Sow in " + x.d + " d (" + fmtS(x.w.sow) + ")"} · ${esc(x.r.propLocation || "")}</span></span><span class="badge ${x.d <= 0 ? "bad" : "wait"}">${x.left.length} of ${x.r.gates.filter(g => g.scope === "pre-sowing").length} gates open</span></div>`;
-  const opts = p.map(({r, g}) => `<option value="${esc(r.runId)}|${esc(g.id)}">${esc(r.cropName)} · ${esc(r.runId)} · ${esc(g.id)} ${esc(g.name)}</option>`).join("");
+  const opts = p.map(({r, g}) => `<option value="${esc(r.runId)}|${esc(g.id)}|${esc(g.logId)}">${esc(r.cropName)} · ${esc(r.runId)} · ${esc(g.id)} ${esc(g.name)}${g.completedBy ? " · " + esc(g.completedBy) : ""}</option>`).join("");
   const body = `${mg ? "" : `<div class="note">View only. Sign in as a manager to verify.</div>`}
-    <h3>Gate steps done, awaiting verification (${p.length})</h3>${p.length ? `<div class="g">${p.map(row).join("")}</div>` : `<p class="k">None. A step appears here once a worker (or a manager) marks it done.</p>`}
+    <h3>Gate steps done, awaiting verification (${p.length})</h3>${p.length ? `<div class="g">${p.map(row).join("")}</div>` : `<p class="k">None. A worker portion appears here once it is submitted; each one is verified on its own.</p>`}
     <h3>Benches blocking an upcoming sow (${b.length}) · pre-sowing gates not cleared</h3>${b.length ? `<div class="g">${b.map(brow).join("")}</div>` : `<p class="k">No sow in the next 14 days is waiting on a bench gate.</p>`}
     <h3>Verify a done step by ID</h3><div class="frm"><select id="vsel" aria-label="Step to verify" ${p.length ? "" : "disabled"}>${opts || `<option>No steps awaiting verification</option>`}</select><input type="text" id="vnote" data-d="vnote" value="${esc(DRAFT.vnote || "")}" placeholder="Verification notes (optional)" aria-label="Verification notes"><button type="button" data-a="verifysel" ${mg && p.length ? "" : "disabled"}>Verify ready</button></div>
     <p class="k">Initiate waves, assign work and override gates in the Propagation Manager console.</p>`;
@@ -270,9 +270,9 @@ function gate() {
   if (!M) { toast("Sign in as a manager to do that.", true); const u = $("uid"); if (u) u.focus(); return false; }
   return true;
 }
-async function doVerify(run, id, notes) {
+async function doVerify(run, id, notes, log) {
   if (!confirm(`Verify ${id} on run ${run} as ready?\n\nThis is recorded under ${M.name}.`)) return;
-  const r = await write("Verifying " + id, () => post({action:"verify", runId:run, activityId:id, notes:notes || ""})); if (r) { delete DRAFT.vnote; toast("Verified " + id); } load(true);
+  const r = await write("Verifying " + id, () => post(log ? {action:"verifyWork", runId:run, activityId:id, logId:log, notes:notes || ""} : {action:"verify", runId:run, activityId:id, notes:notes || ""})); if (r) { delete DRAFT.vnote; toast("Verified " + id); } load(true);
 }
 async function doResolve(id) {
   const note = (DRAFT["ra|" + id] || "").trim(); if (!note) return toast("Type what was done first. It is required and is logged.", true);
@@ -286,8 +286,8 @@ document.addEventListener("click", e => {
     case "refresh": FORCED = false; MODE = "live"; load(); break;
     case "offline": if (!D) return toast("No snapshot saved on this device yet.", true); MODE = "offline"; FORCED = true; render(); break;
     case "live": FORCED = false; MODE = "live"; load(); break;
-    case "verify": if (gate()) doVerify(d.run, d.id, ""); break;
-    case "verifysel": if (gate()) { const v = ($("vsel").value || "").split("|"); if (v.length === 2) doVerify(v[0], v[1], (DRAFT.vnote || "").trim()); } break;
+    case "verify": if (gate()) doVerify(d.run, d.id, "", d.log); break;
+    case "verifysel": if (gate()) { const v = ($("vsel").value || "").split("|"); if (v.length >= 2) doVerify(v[0], v[1], (DRAFT.vnote || "").trim(), v[2] || ""); } break;
     case "resolve": if (gate()) doResolve(d.id); break;
   }
 });
